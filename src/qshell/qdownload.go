@@ -9,6 +9,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"qiniu/api.v6/auth/digest"
@@ -26,6 +27,8 @@ import (
 	"bucket"		:	"test-bucket",
 	"prefix"		:	"demo/",
 	"suffixes"		: 	".png,.jpg",
+	"cdn_domain"		:	"",
+	"proxy"                 :       "",
 }
 */
 
@@ -39,6 +42,8 @@ type DownloadConfig struct {
 	Bucket   string `json:"bucket"`
 	Prefix   string `json:"prefix,omitempty"`
 	Suffixes string `json:"suffixes,omitempty"`
+	CdnDomain string `json:"cdn_domain,omitempty"`
+	DownProxy string `json:"proxy,omitempty"`
 	//log settings
 	LogLevel  string `json:"log_level,omitempty"`
 	LogFile   string `json:"log_file,omitempty"`
@@ -142,6 +147,8 @@ func QiniuDownload(threadCount int, downConfig *DownloadConfig) {
 	SetZone(bucketInfo.Region)
 	ioProxyAddress := conf.IO_HOST
 
+	downProxy := downConfig.DownProxy
+
 	jobListFileName := filepath.Join(storePath, fmt.Sprintf("%s.list", jobId))
 	resumeFile := filepath.Join(storePath, fmt.Sprintf("%s.ldb", jobId))
 	resumeLevelDb, openErr := leveldb.OpenFile(resumeFile, nil)
@@ -242,7 +249,12 @@ func QiniuDownload(threadCount int, downConfig *DownloadConfig) {
 				continue
 			}
 
-			fileUrl := makePrivateDownloadLink(&mac, domainOfBucket, ioProxyAddress, fileKey)
+			var fileUrl string
+			if downConfig.CdnDomain == "" { // if cdn_domain is not provided, use default domain
+				fileUrl = makePrivateDownloadLink(&mac, domainOfBucket, ioProxyAddress, fileKey)
+			} else { // if cdn_domain is provided, use it
+				fileUrl = makePrivateDownloadLink(&mac, domainOfBucket, downConfig.CdnDomain, fileKey)
+			}
 
 			//progress
 			if totalFileCount != 0 {
@@ -338,7 +350,13 @@ func QiniuDownload(threadCount int, downConfig *DownloadConfig) {
 			downloadTasks <- func() {
 				defer downWaitGroup.Done()
 
-				downErr := downloadFile(downConfig.DestDir, fileKey, fileUrl, domainOfBucket, fileSize, fromBytes)
+				var downErr error
+				if downConfig.CdnDomain == "" { // if cdn_domain is not provided, use default domain
+					downErr = downloadFile(downConfig.DestDir, fileKey, fileUrl, domainOfBucket, downProxy, fileSize, fromBytes)
+				} else { // if cdn_domain is provided, use it
+					downErr = downloadFile(downConfig.DestDir, fileKey, fileUrl, downConfig.CdnDomain, downProxy, fileSize, fromBytes)
+				}
+
 				if downErr != nil {
 					atomic.AddInt64(&failureFileCount, 1)
 				} else {
@@ -383,7 +401,7 @@ func makePrivateDownloadLink(mac *digest.Mac, domainOfBucket, ioProxyAddress, fi
 }
 
 //file key -> mtime
-func downloadFile(destDir, fileName, fileUrl, domainsOfBucket string, fileSize int64, fromBytes int64) (err error) {
+func downloadFile(destDir, fileName, fileUrl, domainsOfBucket,downProxy string, fileSize int64, fromBytes int64) (err error) {
 	startDown := time.Now().Unix()
 	localFilePath := filepath.Join(destDir, fileName)
 	localFileDir := filepath.Dir(localFilePath)
@@ -397,11 +415,41 @@ func downloadFile(destDir, fileName, fileUrl, domainsOfBucket string, fileSize i
 	}
 
 	logs.Informational("Downloading", fileName, "=>", localFilePath)
+
+	// http client
+	var client *http.Client
+	remoteUrl := fileUrl
+	downloadProxy := downProxy
+	if downProxy != "" { // 使用代理
+		if strings.Index(downProxy,"http") < 0 {
+			// downloadProxy类似于http://127.0.0.1:8080
+			downloadProxy = fmt.Sprintf("http://%s",downProxy)
+		}
+		urli := url.URL{}
+		urlProxy,pErr := urli.Parse(downloadProxy)
+		if pErr != nil {
+			err =pErr
+			logs.Informational("Invalid download proxy", downProxy, ", parse error:", pErr)
+			return
+		}
+		client = &http.Client{
+			// 设置代理
+			Transport: &http.Transport{
+				Proxy:http.ProxyURL(urlProxy),
+			},
+		}
+		if strings.Index(fileUrl,"http://") < 0 {
+			remoteUrl = fmt.Sprintf("http://%s",fileUrl)
+		}
+	} else { // 不使用代理
+		client = &http.Client{}
+	}
+
 	//new request
-	req, reqErr := http.NewRequest("GET", fileUrl, nil)
+	req, reqErr := http.NewRequest("GET", remoteUrl, nil)
 	if reqErr != nil {
 		err = reqErr
-		logs.Informational("New request", fileName, "failed by url", fileUrl, reqErr)
+		logs.Informational("New request", fileName, "failed by url", remoteUrl, reqErr)
 		return
 	}
 	//set host
@@ -411,10 +459,12 @@ func downloadFile(destDir, fileName, fileUrl, domainsOfBucket string, fileSize i
 		req.Header.Add("Range", fmt.Sprintf("bytes=%d-", fromBytes))
 	}
 
-	resp, respErr := http.DefaultClient.Do(req)
+
+	resp, respErr := client.Do(req)
+
 	if respErr != nil {
 		err = respErr
-		logs.Informational("Download", fileName, "failed by url", fileUrl, respErr)
+		logs.Informational("Download", fileName, "failed by url", remoteUrl, respErr)
 		return
 	}
 	defer resp.Body.Close()

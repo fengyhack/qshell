@@ -33,7 +33,9 @@ qshell qdownload [<ThreadCount>] <LocalDownloadConfig>
     "dest_dir"   :   "<LocalBackupDir>",
     "bucket"     :   "<Bucket>",
     "prefix"     :   "image/",
-    "suffixes"   :   ".png,.jpg"
+    "suffixes"   :   ".png,.jpg",
+    "cdn_domain" :   "",
+    "proxy"      :   "",
 }
 ```
 
@@ -43,6 +45,8 @@ qshell qdownload [<ThreadCount>] <LocalDownloadConfig>
 |bucket|空间名称|N|
 |prefix|只同步指定前缀的文件，默认为空|Y|
 |suffixes|只同步指定后缀的文件，默认为空|Y|
+|cdn_domain|如果指定CDN域名，则使用此域名下载，否则从源站下载，默认为空|Y|
+|proxy|如果指定代理，则使用进行下载，否则直接下载，默认为空|Y|
 
 
 注意，在Windows系统下面使用的时候，注意`dest_dir`的设置遵循`D:\\jemy\\backup`这种方式。也就是路径里面的`\`要有两个（`\\`）。

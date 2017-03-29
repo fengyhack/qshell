@@ -1,3 +1,9 @@
+# 2.0.6
+
+1. 为qdownload的配置DownConfig新增cdn_domain字段（从CDN下载）
+
+2. 为qdownload的配置DownConfig新增proxy字段（使用代理进行下载）
+
 # 2.0.5
 1. 修复2.0.1引入的bug，该bug不影响文件上传结果，但是影响文件上传效率。主要是
 决定采用表单上传还是分片上传的时候逻辑写反了。
